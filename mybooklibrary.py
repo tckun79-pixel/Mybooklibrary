@@ -7,32 +7,68 @@ from firebase_admin import credentials, firestore
 # --- Page Configuration ---
 st.set_page_config(page_title="Cloud Library", page_icon="☁️", layout="wide")
 
-# --- 1. Firebase Authentication & Connection ---
+# ==========================================
+# 🔐 AUTHENTICATION BLOCK (Added)
+# ==========================================
+def check_password():
+    """Returns `True` if the user had the correct password."""
+
+    def password_entered():
+        """Checks whether a password entered by the user is correct."""
+        if st.session_state["password"] == st.secrets["auth"]["password"]:
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # Don't store the password
+        else:
+            st.session_state["password_correct"] = False
+
+    if st.session_state.get("password_correct", False):
+        return True
+
+    st.text_input(
+        "🔐 Please enter the password to access the library:", 
+        type="password", 
+        on_change=password_entered, 
+        key="password"
+    )
+    
+    if "password_correct" in st.session_state and not st.session_state["password_correct"]:
+        st.error("😕 Password incorrect")
+        
+    return False
+
+# Stop execution if password is not correct
+if not check_password():
+    st.stop()
+
+# ==========================================
+# 🔥 FIREBASE CONNECTION
+# ==========================================
 # Check if firebase app is already initialized to avoid errors on refresh
 if not firebase_admin._apps:
     # Load credentials from Streamlit Secrets
+    # Make sure your secrets.toml on Streamlit Cloud has a [firebase] section!
     key_dict = st.secrets["firebase"]
     cred = credentials.Certificate(key_dict)
     firebase_admin.initialize_app(cred)
 
 db = firestore.client()
 
-# --- 2. Helper Functions ---
+# --- Helper Functions ---
 
 def load_data():
     """Fetches data from Firestore and returns a DataFrame"""
+    # Note: Stream uses a generator, list comprehension converts it
     docs = db.collection('books').stream()
     data = [doc.to_dict() for doc in docs]
     
     if data:
         return pd.DataFrame(data)
     else:
-        # Return empty structure if DB is empty
         return pd.DataFrame(columns=["Title", "Author", "Genre", "Year", "Status", "Rating"])
 
 def add_book_to_db(title, author, genre, year, status, rating):
     """Adds a new book to Firestore"""
-    doc_ref = db.collection('books').document() # Auto-generate ID
+    doc_ref = db.collection('books').document()
     doc_ref.set({
         "Title": title,
         "Author": author,
@@ -43,13 +79,17 @@ def add_book_to_db(title, author, genre, year, status, rating):
         "Created_At": firestore.SERVER_TIMESTAMP
     })
 
-# --- 3. Sidebar Navigation ---
+# --- Sidebar Navigation ---
 st.sidebar.title("☁️ Cloud Library")
 page = st.sidebar.radio("Navigate", ["Dashboard", "Inventory", "Add New Book", "Analytics"])
 
 # --- PAGE 1: DASHBOARD ---
 if page == "Dashboard":
     st.title("📊 Dashboard Overview")
+    # Add a refresh button to manually fetch new data
+    if st.button("Refresh Data"):
+        st.cache_data.clear()
+        
     df = load_data()
 
     if not df.empty:
@@ -84,7 +124,6 @@ elif page == "Inventory":
     df = load_data()
     
     if not df.empty:
-        # Search & Filter
         col1, col2 = st.columns(2)
         search_term = col1.text_input("🔍 Search")
         filter_genre = col2.multiselect("Filter Genre", options=df['Genre'].unique())
@@ -119,7 +158,6 @@ elif page == "Add New Book":
             if title and author:
                 add_book_to_db(title, author, genre, year, status, rating)
                 st.success(f"Saved '{title}' to the cloud!")
-                st.cache_data.clear() # Clear cache to refresh data immediately
             else:
                 st.error("Title and Author are required.")
 
