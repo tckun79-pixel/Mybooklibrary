@@ -8,7 +8,7 @@ from firebase_admin import credentials, firestore
 st.set_page_config(page_title="Cloud Library", page_icon="☁️", layout="wide")
 
 # ==========================================
-# 🔐 AUTHENTICATION BLOCK (Added)
+# 🔐 AUTHENTICATION BLOCK
 # ==========================================
 def check_password():
     """Returns `True` if the user had the correct password."""
@@ -46,8 +46,9 @@ if not check_password():
 # Check if firebase app is already initialized to avoid errors on refresh
 if not firebase_admin._apps:
     # Load credentials from Streamlit Secrets
-    # Make sure your secrets.toml on Streamlit Cloud has a [firebase] section!
-    key_dict = st.secrets["firebase"]
+    # FIX: Convert Streamlit secrets object to a standard Python dictionary
+    key_dict = dict(st.secrets["firebase"])
+    
     cred = credentials.Certificate(key_dict)
     firebase_admin.initialize_app(cred)
 
@@ -57,7 +58,6 @@ db = firestore.client()
 
 def load_data():
     """Fetches data from Firestore and returns a DataFrame"""
-    # Note: Stream uses a generator, list comprehension converts it
     docs = db.collection('books').stream()
     data = [doc.to_dict() for doc in docs]
     
@@ -86,7 +86,6 @@ page = st.sidebar.radio("Navigate", ["Dashboard", "Inventory", "Add New Book", "
 # --- PAGE 1: DASHBOARD ---
 if page == "Dashboard":
     st.title("📊 Dashboard Overview")
-    # Add a refresh button to manually fetch new data
     if st.button("Refresh Data"):
         st.cache_data.clear()
         
