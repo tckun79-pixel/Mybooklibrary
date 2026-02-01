@@ -17,8 +17,6 @@ import json # Add this import at the top if missing
 
 def init_firebase():
     """Initializes Firebase connection using Streamlit Secrets."""
-    if DEMO_MODE:
-        return None
 
     # Check if app is already initialized
     if not firebase_admin._apps:
