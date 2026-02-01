@@ -13,29 +13,54 @@ st.set_page_config(page_title="My Library", page_icon="📚", layout="wide")
 # Keep as TRUE to test the UI without needing keys immediately
 DEMO_MODE = True 
 
-import json # Add this import at the top if missing
+import json
+import ast # Import ast for safer Python literal evaluation
 
 def init_firebase():
-    """Initializes Firebase connection using Streamlit Secrets."""
-
+    """
+    Initializes Firebase with 'Smart Parsing' to auto-correct 
+    common JSON formatting issues in Streamlit Secrets.
+    """
+    
     # Check if app is already initialized
     if not firebase_admin._apps:
         try:
-            # Try loading from Streamlit Cloud Secrets first
+            # 1. Try loading from Streamlit Cloud Secrets
             if "firebase" in st.secrets:
-                key_dict = json.loads(st.secrets["firebase"]["textkey"])
+                key_content = st.secrets["firebase"]["textkey"]
+                
+                # --- SMART PARSING BLOCK ---
+                try:
+                    # Attempt A: Standard JSON parse
+                    key_dict = json.loads(key_content)
+                except ValueError:
+                    try:
+                        # Attempt B: Loose Mode (fixes "Invalid control character" / newlines)
+                        # strict=False allows control characters inside strings
+                        key_dict = json.loads(key_content, strict=False)
+                    except ValueError:
+                        # Attempt C: Python Dict Fallback
+                        # Useful if you accidentally copied a Python dict (with single quotes) 
+                        # instead of strict JSON (double quotes).
+                        try:
+                            key_dict = ast.literal_eval(key_content)
+                        except:
+                            # If all fail, raise the original error to show the user
+                            raise ValueError("Could not parse the Secrets key. Please check the format.")
+                # ---------------------------
+
                 cred = credentials.Certificate(key_dict)
                 firebase_admin.initialize_app(cred)
-
-            # Fallback to local file for testing on your machine
+            
+            # 2. Local fallback (for when you run 'streamlit run' on your PC)
             else:
                 cred = credentials.Certificate("firebase_key.json")
                 firebase_admin.initialize_app(cred)
-
+                
         except Exception as e:
             st.error(f"❌ Database connection failed: {e}")
             return None
-
+    
     return firestore.client()
 
 db = init_firebase()
