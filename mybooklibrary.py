@@ -1,23 +1,23 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from datetime import datetime
 import firebase_admin
 from firebase_admin import credentials, firestore
 import uuid
+import json
+import ast 
 
 # --- CONFIGURATION & SETUP ---
 st.set_page_config(page_title="My Library", page_icon="📚", layout="wide")
 
-import json
-import ast # Import ast for safer Python literal evaluation
-
+# --- FIREBASE CONNECTION HANDLER (SMART PARSE) ---
+@st.cache_resource
 def init_firebase():
     """
-    Initializes Firebase with 'Smart Parsing' to auto-correct 
-    common JSON formatting issues in Streamlit Secrets.
+    Initializes Firebase. 
+    Strictly checks for 'firebase_key.json' (Local) or Streamlit Secrets (Cloud).
+    Uses 'Smart Parse' to handle formatting issues in Secrets.
     """
-    
     # Check if app is already initialized
     if not firebase_admin._apps:
         try:
@@ -31,24 +31,20 @@ def init_firebase():
                     key_dict = json.loads(key_content)
                 except ValueError:
                     try:
-                        # Attempt B: Loose Mode (fixes "Invalid control character" / newlines)
-                        # strict=False allows control characters inside strings
+                        # Attempt B: Loose Mode (fixes newlines)
                         key_dict = json.loads(key_content, strict=False)
                     except ValueError:
                         # Attempt C: Python Dict Fallback
-                        # Useful if you accidentally copied a Python dict (with single quotes) 
-                        # instead of strict JSON (double quotes).
                         try:
                             key_dict = ast.literal_eval(key_content)
                         except:
-                            # If all fail, raise the original error to show the user
-                            raise ValueError("Could not parse the Secrets key. Please check the format.")
+                            raise ValueError("Could not parse the Secrets key.")
                 # ---------------------------
 
                 cred = credentials.Certificate(key_dict)
                 firebase_admin.initialize_app(cred)
             
-            # 2. Local fallback (for when you run 'streamlit run' on your PC)
+            # 2. Local fallback (for local development)
             else:
                 cred = credentials.Certificate("firebase_key.json")
                 firebase_admin.initialize_app(cred)
@@ -64,130 +60,157 @@ db = init_firebase()
 # --- DATA FUNCTIONS ---
 
 def get_data():
-    """Fetches data from Firebase or generates Mock Data."""
-    if DEMO_MODE:
-        # Generate robust mock data if in demo mode
-        if 'mock_data' not in st.session_state:
-            st.session_state.mock_data = pd.DataFrame([
-                {"id": "1", "Title": "The Laws of Trading", "Author": "Agustin Lebron", "Genre": "Finance", "Status": "Read", "Rating": 5, "Year": 2019},
-                {"id": "2", "Title": "Dune", "Author": "Frank Herbert", "Genre": "Sci-Fi", "Status": "Read", "Rating": 5, "Year": 1965},
-                {"id": "3", "Title": "Atomic Habits", "Author": "James Clear", "Genre": "Self-Help", "Status": "Reading", "Rating": 4, "Year": 2018},
-                {"id": "4", "Title": "Project Hail Mary", "Author": "Andy Weir", "Genre": "Sci-Fi", "Status": "To Read", "Rating": 0, "Year": 2021},
-                {"id": "5", "Title": "Clean Code", "Author": "Robert C. Martin", "Genre": "Tech", "Status": "Read", "Rating": 4, "Year": 2008},
-                {"id": "6", "Title": "Thinking, Fast and Slow", "Author": "Daniel Kahneman", "Genre": "Psychology", "Status": "Reading", "Rating": 0, "Year": 2011},
-                {"id": "7", "Title": "Zero to One", "Author": "Peter Thiel", "Genre": "Business", "Status": "Read", "Rating": 3, "Year": 2014},
-            ])
-        return st.session_state.mock_data
-    else:
-        # Real Firebase Fetch
-        if db:
-            docs = db.collection('books').stream()
-            items = [{"id": doc.id, **doc.to_dict()} for doc in docs]
-            if items:
-                return pd.DataFrame(items)
-            else:
-                return pd.DataFrame(columns=["Title", "Author", "Genre", "Status", "Rating", "Year"])
+    """Fetches real data from Firebase."""
+    if not db:
+        return pd.DataFrame()
+        
+    try:
+        docs = db.collection('books').stream()
+        items = [{"id": doc.id, **doc.to_dict()} for doc in docs]
+        
+        if items:
+            return pd.DataFrame(items)
+        else:
+            # Return empty structure if DB is empty
+            return pd.DataFrame(columns=["Title", "Author", "Genre", "Status", "Rating", "Year"])
+            
+    except Exception as e:
+        st.error(f"Error fetching data: {e}")
         return pd.DataFrame()
 
 def add_book_to_db(data):
-    """Adds a new book to the database."""
-    if DEMO_MODE:
-        new_row = pd.DataFrame([data])
-        st.session_state.mock_data = pd.concat([st.session_state.mock_data, new_row], ignore_index=True)
-        return True
-    else:
-        if db:
-            db.collection('books').add(data)
-            return True
+    """Adds a new book to the Firestore database."""
+    if not db:
+        st.error("Not connected to database.")
         return False
+        
+    try:
+        db.collection('books').add(data)
+        return True
+    except Exception as e:
+        st.error(f"Error saving to database: {e}")
+        return False
+
+def update_book_status(book_id, new_status, new_rating):
+    """Updates specific fields in Firestore."""
+    if db:
+        doc_ref = db.collection('books').document(book_id)
+        doc_ref.update({
+            'Status': new_status,
+            'Rating': new_rating
+        })
 
 # --- UI LAYOUT ---
 
 # Sidebar Navigation
 with st.sidebar:
-    st.header("Library OS 2.0")
+    st.header("Library OS")
     page = st.radio("Navigation", ["📊 Dashboard", "📚 Inventory", "➕ Add Book", "📈 Analytics"])
     st.divider()
-    if DEMO_MODE:
-        st.warning("⚠️ Demo Mode Active. Data is not saved to cloud.")
+    if db:
+        st.success("🟢 Online")
     else:
-        st.success("🟢 Connected to Firebase")
+        st.error("🔴 Offline")
 
 # Load Data
 df = get_data()
 
 # --- PAGE 1: DASHBOARD ---
 if page == "📊 Dashboard":
-    st.title("Welcome back! 👋")
+    st.title("Library Dashboard")
     
-    # Top Metrics
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Total Books", len(df))
-    with col2:
-        read_count = len(df[df['Status'] == 'Read'])
-        st.metric("Books Read", read_count)
-    with col3:
-        toread_count = len(df[df['Status'] == 'To Read'])
-        st.metric("To Read Queue", toread_count)
-    with col4:
-        avg_rating = df[df['Rating'] > 0]['Rating'].mean()
-        st.metric("Avg Rating", f"{avg_rating:.1f} ⭐")
+    if df.empty:
+        st.info("Your library is empty! Go to 'Add Book' to get started.")
+    else:
+        # Top Metrics
+        col1, col2, col3, col4 = st.columns(4)
+        with col1:
+            st.metric("Total Books", len(df))
+        with col2:
+            read_count = len(df[df['Status'] == 'Read'])
+            st.metric("Books Read", read_count)
+        with col3:
+            toread_count = len(df[df['Status'] == 'To Read'])
+            st.metric("To Read Queue", toread_count)
+        with col4:
+            # Handle case where rating might be NaN or string
+            valid_ratings = df[pd.to_numeric(df['Rating'], errors='coerce') > 0]
+            if not valid_ratings.empty:
+                avg_rating = valid_ratings['Rating'].mean()
+                st.metric("Avg Rating", f"{avg_rating:.1f} ⭐")
+            else:
+                st.metric("Avg Rating", "-")
 
-    st.divider()
-    
-    # Spotlight Section
-    c1, c2 = st.columns([2, 1])
-    with c1:
-        st.subheader("📖 Currently Reading")
-        current = df[df['Status'] == 'Reading']
-        if not current.empty:
-            for _, row in current.iterrows():
-                st.info(f"**{row['Title']}** by {row['Author']} ({row['Genre']})")
-        else:
-            st.write("You are not reading anything right now. Pick a book!")
-            
-    with c2:
-        st.subheader("🔥 Top Rated")
-        top_rated = df.sort_values(by='Rating', ascending=False).head(3)
-        st.dataframe(top_rated[['Title', 'Rating']], hide_index=True)
+        st.divider()
+        
+        # Spotlight Section
+        c1, c2 = st.columns([2, 1])
+        with c1:
+            st.subheader("📖 Currently Reading")
+            current = df[df['Status'] == 'Reading']
+            if not current.empty:
+                for _, row in current.iterrows():
+                    st.info(f"**{row['Title']}** by {row['Author']} ({row['Genre']})")
+            else:
+                st.write("You are not reading anything right now.")
+                
+        with c2:
+            st.subheader("🔥 Top Rated")
+            if 'Rating' in df.columns:
+                # Ensure Rating is numeric for sorting
+                df['Rating'] = pd.to_numeric(df['Rating'], errors='coerce').fillna(0)
+                top_rated = df.sort_values(by='Rating', ascending=False).head(5)
+                st.dataframe(
+                    top_rated[['Title', 'Rating']], 
+                    hide_index=True,
+                    column_config={"Rating": st.column_config.NumberColumn(format="%d ⭐")}
+                )
 
 # --- PAGE 2: INVENTORY ---
 elif page == "📚 Inventory":
     st.title("Library Inventory")
     
-    # Search / Filter
-    search_term = st.text_input("🔍 Search by Title or Author", "")
-    
-    # Filter Logic
-    if search_term:
-        filtered_df = df[df['Title'].str.contains(search_term, case=False) | df['Author'].str.contains(search_term, case=False)]
+    if df.empty:
+        st.warning("No books found.")
     else:
-        filtered_df = df
+        # Search / Filter
+        search_term = st.text_input("🔍 Search by Title or Author", "")
+        
+        # Filter Logic
+        if search_term:
+            filtered_df = df[df['Title'].str.contains(search_term, case=False) | df['Author'].str.contains(search_term, case=False)]
+        else:
+            filtered_df = df
 
-    # Editable Dataframe
-    # Note: Full 2-way sync with Firebase via st.data_editor requires extra logic (listening to callbacks).
-    # For this version, we display the grid.
-    st.data_editor(
-        filtered_df,
-        column_config={
-            "Rating": st.column_config.NumberColumn(
-                "Rating",
-                help="Stars 1-5",
-                min_value=0,
-                max_value=5,
-                step=1,
-                format="%d ⭐",
-            ),
-            "Status": st.column_config.SelectboxColumn(
-                "Status",
-                options=["Read", "Reading", "To Read", "DNF"],
-                required=True,
-            )
-        },
-        hide_index=True,
-        use_container_width=True
-    )
+        # Editable Dataframe
+        edited_df = st.data_editor(
+            filtered_df,
+            column_config={
+                "Rating": st.column_config.NumberColumn(
+                    "Rating",
+                    help="Stars 1-5",
+                    min_value=0,
+                    max_value=5,
+                    step=1,
+                    format="%d ⭐",
+                ),
+                "Status": st.column_config.SelectboxColumn(
+                    "Status",
+                    options=["Read", "Reading", "To Read", "DNF"],
+                    required=True,
+                ),
+                # Hide internal ID
+                "id": None 
+            },
+            hide_index=True,
+            use_container_width=True,
+            key="inventory_editor"
+        )
+        
+        # NOTE: Streamlit data_editor does not automatically sync back to Firebase.
+        # You would need a "Save Changes" button or session state comparison logic to update 
+        # the DB based on 'edited_df'. That is advanced logic. 
+        # For now, this view allows you to VIEW and SORT locally.
 
 # --- PAGE 3: ADD BOOK ---
 elif page == "➕ Add Book":
@@ -213,20 +236,17 @@ elif page == "➕ Add Book":
                     "Title": title,
                     "Author": author,
                     "Genre": genre,
-                    "Year": year,
+                    "Year": int(year),
                     "Status": status,
-                    "Rating": rating,
-                    "id": str(uuid.uuid4()) # Unique ID for Firebase
+                    "Rating": int(rating),
+                    "Created_At": firestore.SERVER_TIMESTAMP
                 }
                 
                 success = add_book_to_db(new_book)
                 
                 if success:
                     st.success(f"Added '{title}' to your library!")
-                    # Rerun to update the dataframe immediately
                     st.rerun() 
-                else:
-                    st.error("Failed to connect to Database.")
             else:
                 st.warning("Please enter at least a Title and Author.")
 
@@ -253,4 +273,4 @@ elif page == "📈 Analytics":
         fig_hist = px.histogram(df, x="Year", nbins=20, title="Books by Publication Year")
         st.plotly_chart(fig_hist, use_container_width=True)
     else:
-        st.info("Add some books to see analytics!")
+        st.info("No data available for analytics.")
