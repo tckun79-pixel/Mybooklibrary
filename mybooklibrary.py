@@ -9,10 +9,6 @@ import uuid
 # --- CONFIGURATION & SETUP ---
 st.set_page_config(page_title="My Library", page_icon="📚", layout="wide")
 
-# TOGGLE THIS TO FALSE TO CONNECT TO REAL FIREBASE
-# Keep as TRUE to test the UI without needing keys immediately
-DEMO_MODE = True 
-
 import json
 import ast # Import ast for safer Python literal evaluation
 
