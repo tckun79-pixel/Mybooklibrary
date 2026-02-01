@@ -12,6 +12,41 @@ import datetime
 # --- CONFIGURATION & SETUP ---
 st.set_page_config(page_title="Library OS Pro", page_icon="📚", layout="wide")
 
+# --- AUTHENTICATION MODULE ---
+def check_password():
+    """Returns `True` if the user had the correct password."""
+
+    def password_entered():
+        """Checks whether a password entered by the user is correct."""
+        if st.session_state["password"] == st.secrets["general"]["password"]:
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # Don't store password
+        else:
+            st.session_state["password_correct"] = False
+
+    # Return True if already validated
+    if st.session_state.get("password_correct", False):
+        return True
+
+    # Show input if not validated
+    st.title("🔒 Library OS Login")
+    st.text_input(
+        "Password", type="password", on_change=password_entered, key="password"
+    )
+    
+    if "password_correct" in st.session_state and not st.session_state["password_correct"]:
+        st.error("😕 Password incorrect")
+        
+    return False
+
+# --- STOP EXECUTION IF NOT LOGGED IN ---
+if not check_password():
+    st.stop()  # The app stops here if password is wrong/missing
+
+# ==========================================
+#  ✅ MAIN APP LOGIC (Only runs if Logged In)
+# ==========================================
+
 # --- FIREBASE CONNECTION (Smart Parse) ---
 @st.cache_resource
 def init_firebase():
@@ -47,13 +82,9 @@ db = init_firebase()
 # --- HELPER: GOOGLE BOOKS API ---
 @st.cache_data(ttl=3600)
 def fetch_book_metadata(query):
-    """
-    Searches Google Books API for a title/ISBN.
-    Returns: dict with title, authors, year, categories, thumbnail
-    """
+    """Searches Google Books API for a title/ISBN."""
     if not query:
         return None
-    
     try:
         url = f"https://www.googleapis.com/books/v1/volumes?q={query}"
         response = requests.get(url)
@@ -61,8 +92,6 @@ def fetch_book_metadata(query):
             data = response.json()
             if "items" in data:
                 item = data['items'][0]['volumeInfo']
-                
-                # Extract data safely
                 return {
                     "Title": item.get('title', query),
                     "Author": ", ".join(item.get('authors', ["Unknown"])),
@@ -87,31 +116,20 @@ def get_data():
         return pd.DataFrame()
 
 def save_changes_to_db(df_original, df_edited):
-    """
-    Compares original vs edited dataframe and pushes updates to Firestore.
-    This enables Two-Way Sync.
-    """
+    """Two-Way Sync Logic."""
     if not db: return
-    
-    # Identify changes
     changes_count = 0
     progress_bar = st.progress(0)
     
-    # Iterate through rows to find diffs (Simplified for robustness)
-    # in a production app with thousands of rows, we'd use index comparison
     for index, row in df_edited.iterrows():
         book_id = row['id']
-        
-        # Check if this ID exists in original (it should)
         original_row = df_original[df_original['id'] == book_id]
         
         if not original_row.empty:
-            # Check for specific field changes
             orig_status = original_row.iloc[0]['Status']
             orig_rating = original_row.iloc[0]['Rating']
             
             if row['Status'] != orig_status or row['Rating'] != orig_rating:
-                # Update Firestore
                 db.collection('books').document(book_id).update({
                     "Status": row['Status'],
                     "Rating": row['Rating']
@@ -121,21 +139,27 @@ def save_changes_to_db(df_original, df_edited):
     progress_bar.empty()
     if changes_count > 0:
         st.success(f"✅ Synced {changes_count} changes to cloud!")
-        st.cache_data.clear() # Clear cache to force refresh
+        st.cache_data.clear()
         st.rerun()
 
 # --- UI LAYOUT ---
 with st.sidebar:
     st.header("Library OS Pro")
+    
+    # Navigation
     page = st.radio("Navigation", ["📊 Dashboard", "📚 Inventory (Sync)", "➕ Add (Auto-Fill)", "📈 Analytics"])
     st.divider()
     
-    # Feature 3: Reading Challenge Settings
+    # Reading Challenge Settings
     st.subheader("🎯 2026 Challenge")
     goal = st.number_input("Target Books", value=20, min_value=1)
     
-    if db: st.success("🟢 Online")
-    else: st.error("🔴 Offline")
+    st.divider()
+    
+    # Log Out Button
+    if st.button("Log Out"):
+        st.session_state["password_correct"] = False
+        st.rerun()
 
 df = get_data()
 
@@ -144,101 +168,80 @@ if page == "📊 Dashboard":
     st.title("Executive Dashboard")
     
     if not df.empty:
-        # 1. Reading Challenge Tracker
+        # Challenge Tracker
         read_count = len(df[df['Status'] == 'Read'])
         progress = min(read_count / goal, 1.0)
-        
         st.write(f"**Yearly Goal:** {read_count} of {goal} books completed")
         st.progress(progress)
-        if progress >= 1.0:
-            st.balloons()
+        if progress >= 1.0: st.balloons()
         
         st.divider()
 
-        # 2. Key Metrics
+        # Metrics
         c1, c2, c3, c4 = st.columns(4)
         c1.metric("Total Assets", len(df))
         c2.metric("Reading", len(df[df['Status'] == 'Reading']))
         c3.metric("To Read", len(df[df['Status'] == 'To Read']))
         
-        # Calculate Avg Rating safely
         if 'Rating' in df.columns:
             avg = pd.to_numeric(df['Rating'], errors='coerce').fillna(0).mean()
             c4.metric("Quality Score", f"{avg:.1f} / 5.0")
             
         st.divider()
         
-        # 3. Visual Spotlight (Auto-Fetch Covers)
+        # Spotlight (Active Reads)
         st.subheader("📖 Active Reads")
         current_books = df[df['Status'] == 'Reading']
         
         if not current_books.empty:
-            cols = st.columns(5) # Grid layout
+            cols = st.columns(5)
             for idx, row in current_books.iterrows():
                 with cols[idx % 5]:
-                    # Use cover from DB or fetch fallback
                     cover_url = row.get('Cover')
                     if not cover_url or pd.isna(cover_url):
-                        # Attempt live fetch if missing (optional, can be slow)
                         meta = fetch_book_metadata(f"{row['Title']} {row['Author']}")
                         cover_url = meta['Cover'] if meta else "https://via.placeholder.com/150x220?text=No+Cover"
                     
                     st.image(cover_url, width=120)
                     st.caption(f"**{row['Title']}**")
         else:
-            st.info("No active books. Go to Inventory to start one!")
+            st.info("No active books.")
 
-# --- PAGE 2: INVENTORY (Two-Way Sync) ---
+# --- PAGE 2: INVENTORY ---
 elif page == "📚 Inventory (Sync)":
     st.title("Master Inventory")
-    
     if df.empty:
         st.warning("Library is empty.")
     else:
         st.caption("⚡ Edit 'Status' or 'Rating' directly in the grid, then click 'Save Changes'.")
-        
-        # Search
         search = st.text_input("🔍 Filter", "")
-        if search:
-            view_df = df[df['Title'].str.contains(search, case=False) | df['Author'].str.contains(search, case=False)]
-        else:
-            view_df = df
+        view_df = df[df['Title'].str.contains(search, case=False) | df['Author'].str.contains(search, case=False)] if search else df
 
-        # Editable Grid
         edited_df = st.data_editor(
             view_df,
             column_config={
                 "Cover": st.column_config.ImageColumn("Cover", width="small"),
                 "Rating": st.column_config.NumberColumn("Rating", min_value=0, max_value=5, format="%d ⭐"),
                 "Status": st.column_config.SelectboxColumn("Status", options=["To Read", "Reading", "Read", "DNF"]),
-                "id": None # Hide ID
+                "id": None 
             },
-            use_container_width=True,
-            hide_index=True,
-            key="data_editor",
-            num_rows="fixed" 
+            use_container_width=True, hide_index=True, key="data_editor", num_rows="fixed" 
         )
-        
-        # Save Button triggers the Sync Logic
         if st.button("💾 Save Changes to Cloud"):
             save_changes_to_db(df, edited_df)
 
-# --- PAGE 3: ADD BOOK (Auto-Fill) ---
+# --- PAGE 3: ADD BOOK ---
 elif page == "➕ Add (Auto-Fill)":
     st.title("Acquire New Book")
-    
-    # Initialize session state for form values if not exists
     if 'form_title' not in st.session_state: st.session_state.form_title = ""
     if 'form_author' not in st.session_state: st.session_state.form_author = ""
     if 'form_year' not in st.session_state: st.session_state.form_year = 2024
     if 'form_cover' not in st.session_state: st.session_state.form_cover = ""
     
-    # 1. Search Bar for Auto-Fill
     with st.container(border=True):
         st.subheader("🤖 AI Auto-Fill")
         col_search, col_btn = st.columns([3, 1])
-        search_query = col_search.text_input("Enter ISBN or Book Title to search metadata", placeholder="e.g. The Laws of Trading")
-        
+        search_query = col_search.text_input("Enter ISBN/Title", placeholder="e.g. The Laws of Trading")
         if col_btn.button("🔍 Search & Fill"):
             with st.spinner("Querying Google Books..."):
                 meta = fetch_book_metadata(search_query)
@@ -247,19 +250,13 @@ elif page == "➕ Add (Auto-Fill)":
                     st.session_state.form_author = meta['Author']
                     st.session_state.form_year = meta['Year']
                     st.session_state.form_cover = meta.get('Cover', "")
-                    st.success("Metadata found! Form updated below.")
-                else:
-                    st.error("Book not found. Please enter manually.")
+                    st.success("Found!")
+                else: st.error("Not found.")
 
-    # 2. The Form
     with st.form("add_book_form"):
         st.subheader("Book Details")
         c1, c2 = st.columns([1, 2])
-        
-        # Show cover preview if available
-        if st.session_state.form_cover:
-            c1.image(st.session_state.form_cover, width=100)
-        
+        if st.session_state.form_cover: c1.image(st.session_state.form_cover, width=100)
         with c2:
             title = st.text_input("Title", value=st.session_state.form_title)
             author = st.text_input("Author", value=st.session_state.form_author)
@@ -269,40 +266,25 @@ elif page == "➕ Add (Auto-Fill)":
         year = c4.number_input("Year", value=st.session_state.form_year)
         status = c5.selectbox("Status", ["To Read", "Reading", "Read"])
         
-        # Hidden inputs to pass state
-        cover_input = st.text_input("Cover URL (Hidden)", value=st.session_state.form_cover, type="password") 
-        
         if st.form_submit_button("Add to Library"):
             new_book = {
-                "Title": title,
-                "Author": author,
-                "Genre": genre,
-                "Year": year,
-                "Status": status,
-                "Rating": 0,
-                "Cover": st.session_state.form_cover, # Use the session state cover
-                "Created_At": firestore.SERVER_TIMESTAMP,
-                "id": str(uuid.uuid4())
+                "Title": title, "Author": author, "Genre": genre, "Year": year,
+                "Status": status, "Rating": 0, "Cover": st.session_state.form_cover,
+                "Created_At": firestore.SERVER_TIMESTAMP, "id": str(uuid.uuid4())
             }
             if db:
                 db.collection('books').add(new_book)
                 st.success("Book Added!")
-                # Clear state
-                for key in ['form_title', 'form_author', 'form_cover']:
-                    st.session_state[key] = ""
+                for key in ['form_title', 'form_author', 'form_cover']: st.session_state[key] = ""
                 st.rerun()
 
 # --- PAGE 4: ANALYTICS ---
 elif page == "📈 Analytics":
     st.title("Knowledge Analytics")
-    
     if not df.empty:
-        # Advanced Chart: ROI / Distribution
         fig = px.sunburst(df, path=['Genre', 'Status'], title="Library Distribution")
         st.plotly_chart(fig, use_container_width=True)
-        
-        # Scatter: Year vs Rating
         if 'Rating' in df.columns:
             df['Rating'] = pd.to_numeric(df['Rating'], errors='coerce')
-            fig2 = px.scatter(df, x="Year", y="Rating", color="Genre", size="Rating", hover_data=['Title'], title="Rating by Era & Genre")
+            fig2 = px.scatter(df, x="Year", y="Rating", color="Genre", size="Rating", title="Rating by Era & Genre")
             st.plotly_chart(fig2, use_container_width=True)
